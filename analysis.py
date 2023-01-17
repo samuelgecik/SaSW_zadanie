@@ -12,6 +12,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from sklearn.feature_extraction.text import TfidfVectorizer
+from transformers import pipeline, AutoTokenizer, AutoModelForSequenceClassification
+
 
 trans = str.maketrans("", "", string.punctuation)  # to eliminate punctuation
 
@@ -175,7 +177,7 @@ def clusters(keys, n, model):
 
 
 # look for most prolific commenter on a given channel and plot their comments over time
-def experiment_troll_detection(df, channelName=None):
+def plot_most_prolific(df, channelName=None):
     if channelName:
         df = df[df["channelName"] == channelName]
 
@@ -225,11 +227,13 @@ def experiment_troll_detection(df, channelName=None):
         )
         fig.show()
 
+
 # get dataframes of top commenters for given channels
-def get_comments_dataframes(df, channelName=None):
+def get_top_commenters(df, channelName=None) -> list[pd.DataFrame]:
     if channelName:
         df = df[df["channelName"] == channelName]
-
+    if len(df) == 0:
+        raise ValueError("No channel found for given ID.")
     # identify and filter for top commenter from each channel
     dataframes = []
     for channel in df["channelName"].unique():
@@ -243,6 +247,72 @@ def get_comments_dataframes(df, channelName=None):
         counts = counts.sort_values(by="count", ascending=False, ignore_index=True)
         dataframes.append(counts)
     return dataframes
+
+
+def get_comments(
+    df, channelName=None, authorChannelId=None, top_authors=5
+) -> list[pd.DataFrame]:
+    top_commenters = get_top_commenters(df, channelName)
+    if authorChannelId:
+        for top_commenter in top_commenters:
+            if authorChannelId in top_commenter["authorChannelId"].values:
+                # return dataframe of authorId, authorDisplayName, channelId and comments for given author
+                df = df[df["authorChannelId"] == authorChannelId]
+                df = df[
+                    [
+                        "authorChannelId",
+                        "authorDisplayName",
+                        "channelId",
+                        "textOriginal",
+                    ]
+                ]
+                return df
+        raise ValueError("No comments found for given author.")
+
+    # get comments for top authors
+    dataframes = []
+    for top_commenter in top_commenters:
+        # take top authors
+        top_commenter = top_commenter[:top_authors]
+        for authorChannelId in top_commenter["authorChannelId"]:
+            # return dataframe of authorId, authorDisplayName, channelId and comments for given author
+            comments_df = df[df["authorChannelId"] == authorChannelId].copy(deep=True)
+            comments_df = comments_df[
+                ["authorChannelId", "authorDisplayName", "channelId", "textOriginal"]
+            ]
+            dataframes.append(comments_df)
+    return dataframes
+
+
+def get_sentiment(model=None, tokenizer=None, data_list=None):
+    model = AutoModelForSequenceClassification.from_pretrained(
+        "Ivor22/distilbert-base-uncased-finetuned-sst2"
+    )
+    tokenizer = AutoTokenizer.from_pretrained(
+        "Ivor22/distilbert-base-uncased-finetuned-sst2"
+    )
+    sentiment_analysis = pipeline(
+        "sentiment-analysis", model=model, tokenizer=tokenizer
+    )
+    return sentiment_analysis(data_list)
+
+def flag_trolls(df, channelName=None, authorChannelId=None, top_authors=5):
+    comments = get_comments(df, channelName, authorChannelId, top_authors)
+    possible_trolls = []
+    for i in range(len(comments)):
+        sentiment = get_sentiment(data_list=list(comments[i]["textOriginal"].values))
+        positive = len([x for x in sentiment if x['label'] == 'LABEL_1'])
+        negative = len([x for x in sentiment if x['label'] == 'LABEL_0'])
+        print(f"Channel {i+1} has {negative} negative comments out of {len(comments[i])} total comments")
+        if negative > positive:
+            print("Channel has been flagged as a possible troll channel")
+            print("Channel name: ", comments[i]["authorDisplayName"].values[0])
+            print("Number of comments classified as negative: ", negative)
+            print("Total number of comments: ", len(comments[i]))
+            print("Percentage of negative comments: ", negative/len(comments[i]) * 100, "%")
+            possible_trolls.append(comments[i]["authorDisplayName"].values[0])
+        print("=============================================================")
+    return possible_trolls
 
 
 # plot comment embeddings for given channels
